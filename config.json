@@ -1,0 +1,30 @@
+{
+  "sources": [
+    { "type": "github", "org": "ilmiya", "author": "Hassanali-ilmiya", "exclude": [], "kinds": ["issue"] }
+  ],
+  "readProjectFields": false,
+  "blockedLabels": ["Blocked"],
+  "inReviewLabels": ["In Review"],
+  "fixEnvironments": {
+    "repos": ["ilmiya/sys", "ilmiya/app", "ilmiya/myilmiya"],
+    "branches": [["main", "production"], ["staging", "staging"], ["development", "dev"]]
+  },
+  "typeLabels": ["Security", "Bug", "Outage", "Feature", "Chore", "Design", "devops"],
+  "priority": {
+    "titlePattern": "\\b(P[0-3])\\b",
+    "order": ["P0", "P1", "P2", "P3"],
+    "critical": ["P0"],
+    "high": ["P1"]
+  },
+  "people": { "me": "Hassanali-ilmiya", "taha": "dnur" },
+  "staleDays": 7,
+  "fullSyncEveryDays": 7,
+  "sla": {
+    "clock": "calendar",
+    "policies": []
+  },
+  "slos": [],
+  "telemetry": {
+    "axiom": { "url": "https://api.axiom.co", "datasets": ["production", "staging", "development"] }
+  }
+}

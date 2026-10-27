@@ -1,0 +1,13 @@
+{
+  "name": "ilmiya-tickets",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node local.mjs serve",
+    "sync": "node local.mjs sync",
+    "sync:full": "node local.mjs sync --full",
+    "test": "node --test --disable-warning=ExperimentalWarning test/*.test.mjs",
+    "check:deploy": "npx wrangler@4.115.0 deploy --dry-run --outdir .wrangler/dry-run"
+  }
+}

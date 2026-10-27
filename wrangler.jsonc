@@ -1,0 +1,19 @@
+{
+  "name": "ilmiya-tickets",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-07-29",
+  // Private tool: no *.workers.dev URL and no preview URLs. Serve it only on a custom domain behind Cloudflare Access.
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": { "directory": "public", "binding": "ASSETS", "run_worker_first": true },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "ilmiya-tickets", "database_id": "REPLACE_WITH_ID_FROM_wrangler_d1_create", "migrations_dir": "migrations" }
+  ],
+  // 02:00 UTC daily = 07:00 PKT.
+  "triggers": { "crons": ["0 2 * * *"] },
+  "vars": {
+    "ACCESS_TEAM_DOMAIN": "https://REPLACE_TEAM.cloudflareaccess.com",
+    "ACCESS_AUD": "REPLACE_WITH_ACCESS_APPLICATION_AUD"
+  },
+  "observability": { "enabled": true }
+}
