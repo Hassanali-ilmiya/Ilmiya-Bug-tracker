@@ -1,9 +1,10 @@
 {
-  "name": "ilmiya-tickets",
+  "name": "ilmiya-bug-tracker",
   "main": "src/worker.js",
   "compatibility_date": "2026-07-29",
-  // Private tool: no *.workers.dev URL and no preview URLs. Serve it only on a custom domain behind Cloudflare Access.
-  "workers_dev": false,
+  // Private tool: served on ilmiya-bug-tracker.<account>.workers.dev, which must sit behind Cloudflare Access
+  // (the Worker refuses every request until ACCESS_TEAM_DOMAIN/ACCESS_AUD below are real). No preview URLs.
+  "workers_dev": true,
   "preview_urls": false,
   "assets": { "directory": "public", "binding": "ASSETS", "run_worker_first": true },
   "d1_databases": [
