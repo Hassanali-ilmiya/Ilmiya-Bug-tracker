@@ -8,24 +8,29 @@
   <script type="module" src="/app.js"></script>
 </head>
 <body>
-  <header class="top">
-    <a class="brand" href="#/overview">Ilmiya Tickets</a>
-    <nav>
-      <a href="#/overview">Overview</a>
-      <a href="#/tickets">Tickets</a>
-      <a href="#/progress">Progress</a>
-      <a href="#/sla">SLA</a>
-      <a href="#/health">Health</a>
-      <a href="#/syncs">Syncs</a>
-      <a href="#/deleted">Deleted</a>
-    </nav>
-    <div class="sync-ctl">
-      <span id="sync-age" class="muted"></span>
-      <button id="sync-now" type="button">Sync now</button>
+  <div class="shell">
+    <aside class="side">
+      <a class="brand" href="#/overview" aria-label="Ilmiya Tickets home">
+        <svg viewBox="0 0 32 32" class="logo" aria-hidden="true"><rect width="32" height="32" rx="8"/><path d="M10 9h12M16 9v14M10 23h12"/></svg>
+        <span><b>Ilmiya</b><small>Ticket Tracker</small></span>
+      </a>
+      <nav id="nav" aria-label="Main"></nav>
+      <div class="side-foot">
+        <button id="theme" type="button" class="ghost" aria-label="Toggle light or dark theme"></button>
+      </div>
+    </aside>
+    <div class="main">
+      <header class="topbar">
+        <div id="crumbs" class="crumbs"></div>
+        <div class="sync-ctl">
+          <span id="sync-age" class="sync-pill"></span>
+          <button id="sync-now" type="button" class="primary"></button>
+        </div>
+      </header>
+      <div id="banner" role="status"></div>
+      <main id="view"><div class="loading">Loading tickets…</div></main>
     </div>
-  </header>
-  <div id="banner" role="status"></div>
-  <main id="view"><p class="muted">Loading…</p></main>
+  </div>
   <div id="tip" class="tip" hidden></div>
 </body>
 </html>
