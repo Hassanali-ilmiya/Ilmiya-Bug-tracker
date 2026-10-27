@@ -7,7 +7,7 @@
   "preview_urls": false,
   "assets": { "directory": "public", "binding": "ASSETS", "run_worker_first": true },
   "d1_databases": [
-    { "binding": "DB", "database_name": "ilmiya-tickets", "database_id": "REPLACE_WITH_ID_FROM_wrangler_d1_create", "migrations_dir": "migrations" }
+    { "binding": "DB", "database_name": "ilmiya-tickets", "database_id": "258cff3f-43ba-4505-a896-10bf29fc1489", "migrations_dir": "migrations" }
   ],
   // 02:00 UTC daily = 07:00 PKT.
   "triggers": { "crons": ["0 2 * * *"] },
