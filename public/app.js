@@ -195,6 +195,7 @@ function chart(el, { labels, series, type = 'line', fmt = v => String(Math.round
       const d = s.values.map((v, i) => (v == null ? '' : `${i && s.values[i - 1] != null ? 'L' : 'M'}${x(i)},${y(v)}`)).join('');
       if (series.length === 1 && s.values.every(v => v != null)) svg += `<path class="area" d="${d} L${x(n - 1)},${y(0)} L${x(0)},${y(0)} Z"/>`;
       svg += `<path class="ln s${k + 1}" d="${d}"/>`;
+      if (n <= 24) svg += s.values.map((v, i) => (v == null ? '' : `<circle class="dot s${k + 1}" r="4" cx="${x(i)}" cy="${y(v)}"/>`)).join('');
     });
   }
   svg += `<line class="xh" y1="${m.t}" y2="${y(0)}" visibility="hidden"/><g class="dots"></g><rect x="${m.l}" y="${m.t}" width="${pw}" height="${ph}" fill="transparent" class="hit"/>`;
@@ -358,7 +359,7 @@ async function detail(view, id) {
   ];
   const branches = data.config.fixEnvironments?.branches ?? [];
   const slaHtml = t.sla.state === 'not_configured' ? notice('<b>Policy not configured.</b> No SLA target applies to this ticket, so it is never classified as breached.')
-    : `<dl class="kv"><dt>Policy</dt><dd>${esc(t.sla.policy)} · ${esc(t.sla.clock)} clock</dd>${['response', 'resolution'].map(k => t.sla[k] ? `<dt>${k}</dt><dd>${slaBadge({ sla: t.sla[k] })} due ${fmtTime(t.sla[k].due)}${t.sla[k].breach_hours ? ` · breached by ${hours(t.sla[k].breach_hours)}` : ''}${t.sla[k].remaining_hours != null ? ` · ${hours(t.sla[k].remaining_hours)} left` : ''}</dd>` : '').join('')}</dl>`;
+    : `<dl class="kv"><dt>Policy</dt><dd>${esc(t.sla.policy)} · ${esc(t.sla.clock)} clock</dd><dt>Responded</dt><dd>${t.response_at ? `${fmtTime(t.response_at)} · by ${esc(t.response_by)}` : 'not yet'}</dd><dt>Resolved</dt><dd>${t.sla_resolved_at ? `${fmtTime(t.sla_resolved_at)} · ${esc(t.sla_resolved_by)}` : 'not yet'}</dd>${['response', 'resolution'].map(k => t.sla[k] ? `<dt>${k}</dt><dd>${slaBadge({ sla: t.sla[k] })} due ${fmtTime(t.sla[k].due)}${t.sla[k].breach_hours ? ` · breached by ${hours(t.sla[k].breach_hours)}` : ''}${t.sla[k].remaining_hours != null ? ` · ${hours(t.sla[k].remaining_hours)} left` : ''}</dd>` : '').join('')}</dl>`;
   const slaHistory = snapshots.map(s => ({ ...JSON.parse(s.data), at: s.captured_at, v: s.policy_version }));
   const send = async (body, done) => {
     try {
@@ -381,7 +382,7 @@ async function detail(view, id) {
     <div class="facts">
       ${fact('Days open', t.days_open, t.state === 'OPEN' ? 'still open' : `closed ${fmtDate(t.closed_at)}`)}
       ${fact('Last activity', ago(t.last_activity), fmtDate(t.last_activity))}
-      ${fact('First response', t.first_response_at ? ago(t.first_response_at) : '—', 'non-author comment')}
+      ${fact('First response', t.response_at ? fmtDate(t.response_at) : '—', t.response_by ? `by ${t.response_by}` : 'no comment or fix commit yet')}
       ${fact('Work started', t.work_started_at ? fmtDate(t.work_started_at) : '—', 'assignment or linked PR')}
       ${fact('Fixed in', esc(t.fix.env ?? (t.fix.manual ? 'none' : '—')), t.fix.manual ? 'manual edit' : 'from branch history')}
     </div>
@@ -389,7 +390,7 @@ async function detail(view, id) {
       <div class="primary-col">
         <div class="card">${cardHead(`${ic('branch')} Fixed in <span class="tag ${t.fix.manual ? 'manual' : 'derived'}">${t.fix.manual ? 'manual' : 'derived'}</span>`, `Highest branch that contains every fix change (${esc(branches.map(([b, e]) => `${b} = ${e}`).join(', ') || 'not configured')}). Code present on the branch, not a verified deploy.`, fixBadge(t))}
           ${t.fix.evidence.length ? `${table(`<th>Fix change</th>${branches.map(([b, e]) => `<th>${esc(e)}<br><span class="small">${esc(b)}</span></th>`).join('')}`,
-            t.fix.evidence.map(e => `<tr><td><a class="mono" href="https://github.com/${esc(e.repo)}/commit/${esc(e.sha)}" target="_blank" rel="noopener noreferrer">${esc(e.repo.split('/')[1])}@${esc(e.sha)}</a> ${esc(e.subject)}<div class="muted small">found via ${esc(e.via)}</div></td>${branches.map(([b]) => `<td>${e.branches[b] ? '<span class="pill good">present</span>' : '<span class="pill">absent</span>'}</td>`).join('')}</tr>`).join(''))}<p class="muted small">Checked ${fmtTime(t.fix.checked_at)}.</p>`
+            t.fix.evidence.map(e => `<tr><td><a class="mono" href="https://github.com/${esc(e.repo)}/commit/${esc(e.sha)}" target="_blank" rel="noopener noreferrer">${esc(e.repo.split('/')[1])}@${esc(e.sha)}</a> ${esc(e.subject)}<div class="muted small">found via ${esc(e.via)}</div></td>${branches.map(([b]) => `<td>${e.branches[b] ? `<span class="pill good">present</span>${e.landed?.[b] ? `<div class="muted small nowrap">landed ${fmtDate(e.landed[b])}</div>` : ''}` : '<span class="pill">absent</span>'}</td>`).join('')}</tr>`).join(''))}<p class="muted small">Checked ${fmtTime(t.fix.checked_at)}.</p>`
             : notice('No fix evidence: no commit on an environment branch references this issue, and no "fixed" comment links a commit.')}
         </div>
         <div class="card">${cardHead(`Activity <span class="tag src">source</span>`, t.timeline_truncated ? 'Showing the first 100 events only.' : `${tl.length + 1} events`)}
@@ -489,8 +490,8 @@ function sla(view, params) {
   const list = issues(), cfg = data.config;
   const durH = (a, b) => (Date.parse(b) - Date.parse(a)) / 3600e3;
   const stats = g => {
-    const res = g.filter(t => t.resolved_at).map(t => durH(t.created_at, t.resolved_at));
-    const resp = g.filter(t => t.first_response_at).map(t => durH(t.created_at, t.first_response_at));
+    const res = g.filter(t => t.sla_resolved_at).map(t => durH(t.created_at, t.sla_resolved_at));
+    const resp = g.filter(t => t.response_at).map(t => durH(t.created_at, t.response_at));
     const start = g.filter(t => t.work_started_at).map(t => durH(t.created_at, t.work_started_at));
     const withPolicy = g.filter(t => t.sla.resolution && ['met', 'breached'].includes(t.sla.resolution.state));
     const breaches = g.filter(t => t.sla.resolution?.state === 'breached');
@@ -506,25 +507,26 @@ function sla(view, params) {
   const groups = [['All issues', list], ...[...new Set(list.map(key))].sort().map(v => [v, list.filter(t => key(t) === v)])];
   const all = stats(list);
   const policyHtml = cfg.sla.policies.length
-    ? table('<th>Policy</th><th>Matches</th><th class="num">Response target</th><th class="num">Resolution target</th>', cfg.sla.policies.map(p => `<tr><td>${esc(p.id)}</td><td class="mono">${esc(JSON.stringify(p.match || {}))}</td><td class="num">${hours(p.responseHours)}</td><td class="num">${hours(p.resolutionHours)}</td></tr>`).join(''))
+    ? `${cfg.sla.owner ? notice(esc(cfg.sla.owner)) : ''}${table('<th>Policy</th><th>Applies to</th><th class="num">Response target</th><th class="num">Resolution target</th><th class="num">Tickets</th>', cfg.sla.policies.map(p => `<tr><td><b>${esc(p.id)}</b></td><td>${Object.keys(p.match || {}).length ? Object.entries(p.match).map(([k, v]) => `${esc(k)} = <b>${esc(v)}</b>`).join(', ') : 'every other ticket'}</td><td class="num">${hours(p.responseHours)}</td><td class="num">${hours(p.resolutionHours)}</td><td class="num">${list.filter(t => t.sla.policy === p.id).length}</td></tr>`).join(''))}`
     : notice('<b>Policy not configured.</b> No SLA targets have been agreed yet, so no ticket is classified as at risk or breached and compliance is not computed. The response and resolution times below are measured facts and do not depend on a policy. Add agreed targets to <code>config.json → sla.policies</code>.');
   const n20 = '<span class="muted" title="needs at least 20 resolved tickets">n&lt;20</span>';
-  view.innerHTML = `${pageHead('SLA', `Clock: <b>${esc(cfg.sla.clock)}</b> time (24×7). Response = first comment by someone other than the author · work started = first assignment or linked PR · resolution = closed as completed.`, `<label class="small muted">Group by <select id="by">${['repo', 'severity', 'assignee', 'type'].map(d => `<option ${d === dim ? 'selected' : ''}>${d}</option>`).join('')}</select></label>`)}
+  const resolvedDef = cfg.sla.resolvedWhen === 'production-or-closed' ? 'the last fix change landing on production (main), or the ticket closed as completed, whichever is first' : 'closed as completed';
+  view.innerHTML = `${pageHead('SLA', `Clock: <b>${esc(cfg.sla.clock)}</b> time (24×7). Response = first comment by someone else or first fix commit · resolved = ${resolvedDef}.`, `<label class="small muted">Group by <select id="by">${['repo', 'severity', 'assignee', 'type'].map(d => `<option ${d === dim ? 'selected' : ''}>${d}</option>`).join('')}</select></label>`)}
     <div class="facts">
       <div class="fact"><div class="k">Compliance</div><div class="v">${all.compliance == null ? '—' : `${all.compliance.toFixed(0)}%`}</div><div class="s">${all.compliance == null ? 'policy not configured' : `${all.breaches} breaches`}</div></div>
-      <div class="fact"><div class="k">Median resolution</div><div class="v">${hours(all.med)}</div><div class="s">${all.resolved} resolved</div></div>
+      <div class="fact"><div class="k">Median resolution</div><div class="v">${hours(all.med)}</div><div class="s">${all.resolved} resolved (fix on prod or closed)</div></div>
       <div class="fact"><div class="k">Average resolution</div><div class="v">${hours(all.avg)}</div><div class="s">P90 ${all.p90 == null ? 'n<20' : hours(all.p90)}</div></div>
-      <div class="fact"><div class="k">Median first response</div><div class="v">${hours(all.resp)}</div><div class="s">n=${all.respN}</div></div>
+      <div class="fact"><div class="k">Median first response</div><div class="v">${hours(all.resp)}</div><div class="s">n=${all.respN} · comment or fix commit</div></div>
     </div>
     <div class="card">${cardHead('Policies', 'Each sync records the policy version it used (see a ticket\'s SLA history).')}${policyHtml}</div>
     <div class="card">${cardHead(`By ${esc(dim)}`)}${table('<th>Group</th><th class="num">Tickets</th><th class="num">Resolved</th><th class="num">Avg resolution</th><th class="num">Median</th><th class="num">P90</th><th class="num">P95</th><th class="num">Median first response</th><th class="num">Median to work start</th><th class="num">Compliance</th><th class="num">Breaches</th>',
       groups.map(([name, g]) => { const s = stats(g); return `<tr><td>${esc(dim === 'repo' && name !== 'All issues' ? name.split('/')[1] : name)}</td><td class="num">${s.n}</td><td class="num">${s.resolved}</td><td class="num">${hours(s.avg)}</td><td class="num">${hours(s.med)}</td><td class="num">${s.p90 == null ? n20 : hours(s.p90)}</td><td class="num">${s.p95 == null ? n20 : hours(s.p95)}</td><td class="num">${hours(s.resp)} <span class="muted small">n=${s.respN}</span></td><td class="num">${hours(s.start)}</td><td class="num">${s.compliance == null ? '<span class="muted">Not configured</span>' : `${s.compliance.toFixed(0)}%`}</td><td class="num">${s.compliance == null ? '—' : `${s.breaches} · ${hours(s.breachH)}`}</td></tr>`; }).join(''))}</div>
     <div class="card">${cardHead('Resolution time trend', 'Median days to resolution, by month of closure')}<div id="c-res"></div></div>`;
   $('#by').addEventListener('change', e => (location.hash = `#/sla?by=${e.target.value}`));
-  const months = [...new Set(list.filter(t => t.resolved_at).map(t => t.resolved_at.slice(0, 7)))].sort().slice(-12);
+  const months = [...new Set(list.filter(t => t.sla_resolved_at).map(t => t.sla_resolved_at.slice(0, 7)))].sort().slice(-12);
   const el = $('#c-res');
   if (!months.length) el.innerHTML = empty('No resolved tickets yet.', 'clock');
-  else chart(el, { labels: months, series: [{ name: 'Median resolution (days)', values: months.map(m => pct(list.filter(t => t.resolved_at?.startsWith(m)).map(t => durH(t.created_at, t.resolved_at) / 24), 50)) }], fmt: v => v.toFixed(1) });
+  else chart(el, { labels: months, series: [{ name: 'Median resolution (days)', values: months.map(m => pct(list.filter(t => t.sla_resolved_at?.startsWith(m)).map(t => durH(t.created_at, t.sla_resolved_at) / 24), 50)) }], fmt: v => v.toFixed(1) });
 }
 
 // ---------- health ----------

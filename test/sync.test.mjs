@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { d1 } from '../local.mjs';
 import { enrich, LIST, report, VISIBLE } from '../src/model.js';
-import { gql, sync } from '../src/sync.js';
+import { gql, landedAt, sync } from '../src/sync.js';
 import worker, { authorized } from '../src/worker.js';
 import fs from 'node:fs';
 import baseCfg from '../config.json' with { type: 'json' };
@@ -205,7 +205,7 @@ test('fixed-in: decided by code on each branch (cherry-picks, reverts, every cha
     const ok = data => new Response(JSON.stringify({ data: { rateLimit: { remaining: 4000, resetAt: 'x' }, ...data } }));
     if (query.includes('history(')) {
       const list = branches[v.ref.replace('refs/heads/', '')];
-      return ok({ repository: { ref: list ? { target: { history: { pageInfo: { hasNextPage: false }, nodes: [...list].reverse() } } } : null } });
+      return ok({ repository: { ref: list ? { target: { history: { pageInfo: { hasNextPage: false }, nodes: list.map((c, i) => ({ ...c, parents: { totalCount: 1, nodes: i ? [{ oid: list[i - 1].oid }] : [] } })).reverse() } } } : null } });
     }
     if (query.includes('object(expression')) return ok({ repository: { object: Object.values(branches).flat().find(c => c.oid.startsWith(v.oid)) ?? null } });
     return gh.fetchImpl(url, init);
@@ -281,4 +281,37 @@ test('tracker controls: edits are validated, logged and win over source; deleted
   const log = (await db.prepare("SELECT field, old, new FROM changes WHERE field LIKE 'manual:%' ORDER BY id").all()).results.map(c => `${c.field}:${c.old}->${c.new}`);
   assert.deepEqual(log, ['manual:status:null->done', 'manual:priority:null->P0', 'manual:fix_env:null->dev', 'manual:note:null->verified on prod', 'manual:hidden:0->1', 'manual:hidden:1->0',
     'manual:status:done->null', 'manual:priority:P0->null', 'manual:fix_env:dev->null', 'manual:note:verified on prod->null']);
+});
+
+test('landedAt: a fix lands on a branch when the mainline merge that brought it in was made, not when it was written', () => {
+  const c = (oid, date, parents) => ({ oid, committedDate: date, parents: { nodes: parents.map(o => ({ oid: o })) } });
+  // main: base -> a -> M (merge of fix F, written 10-14, merged 10-21) ; history lists tip first
+  const commits = [c('M', '2026-10-21T00:00:00Z', ['a', 'F']), c('F', '2026-10-14T00:00:00Z', ['base']), c('a', '2026-10-10T00:00:00Z', ['base']), c('base', '2026-10-01T00:00:00Z', [])];
+  const landed = landedAt(commits);
+  assert.equal(landed.get('F'), '2026-10-21T00:00:00Z');
+  assert.equal(landed.get('a'), '2026-10-10T00:00:00Z');
+  assert.equal(landed.get('base'), '2026-10-01T00:00:00Z');
+});
+
+test('SLA: resolved when the fix lands on production (or closed), response via comment or fix commit, by-type policies', () => {
+  const scfg = { ...cfg, fixEnvironments: { repos: ['acme/svc'], branches: [['main', 'production'], ['staging', 'staging'], ['development', 'dev']] },
+    sla: { clock: 'calendar', resolvedWhen: 'production-or-closed', policies: [{ id: 'security', match: { type: 'Security' }, responseHours: 24, resolutionHours: 168 }, { id: 'default', match: {}, responseHours: 72, resolutionHours: 720 }] } };
+  const row = (fix, extra = {}) => ({ id: 'x', repo: 'acme/a', number: 1, kind: 'issue', title: '[Security] thing', state: 'OPEN', author: 'me', assignees: '["asad"]', labels: '[]', blocked_by: '[]', created_at: '2026-10-13T00:00:00Z', updated_at: '2026-10-13T00:00:00Z', facts: '{}', fix_env: JSON.stringify(fix), ...extra });
+  const now = Date.parse('2026-10-27T00:00:00Z');
+  const ev = { repo: 'acme/svc', sha: 'abc', subject: 'fix', committed_at: '2026-10-13T12:00:00Z', branches: {}, landed: {} };
+
+  const late = enrich(scfg, row({ env: 'production', reached: { production: '2026-10-21T00:00:00Z', dev: '2026-10-14T00:00:00Z' }, evidence: [ev] }), now);
+  assert.equal(late.sla.policy, 'security');
+  assert.deepEqual([late.sla_resolved_at, late.sla_resolved_by, late.sla.resolution.state], ['2026-10-21T00:00:00Z', 'fix on production', 'breached'], 'landed on prod after the 7-day deadline');
+  assert.deepEqual([late.response_by, late.sla.response.state], ['fix commit', 'met'], 'a fix commit 12 h after creation is a response');
+  assert.equal(late.overdue, false, 'resolved for SLA, so not overdue even though still open on GitHub');
+
+  const onTime = enrich(scfg, row({ env: 'production', reached: { production: '2026-10-18T00:00:00Z' }, evidence: [ev] }), now);
+  assert.equal(onTime.sla.resolution.state, 'met');
+
+  const devOnly = enrich(scfg, row({ env: 'dev', reached: { dev: '2026-10-14T00:00:00Z' }, evidence: [ev] }), now);
+  assert.deepEqual([devOnly.sla_resolved_at, devOnly.sla.resolution.state, devOnly.overdue], [null, 'breached', true], 'a fix only on dev does not resolve it');
+
+  const bug = enrich(scfg, row({ env: null, evidence: [] }, { title: '[Bug] other', created_at: '2026-10-26T00:00:00Z' }), now);
+  assert.deepEqual([bug.sla.policy, bug.sla.resolution.state, bug.response_at], ['default', 'ok', null], 'catch-all policy for other types');
 });

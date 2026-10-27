@@ -89,7 +89,20 @@ Use a Workers **Paid** plan: a sync exceeds the free plan's 10 ms CPU limit. D1 
 
 ## Configuration still needed
 
-- **SLA policies (`sla.policies`):** none are configured, so every ticket shows *Policy not configured*. Shape: `{ "id": "sec-p0", "match": { "type": "Security", "priority": "P0" }, "responseHours": 4, "resolutionHours": 72 }`. The first matching policy wins; match keys are `type`, `priority`, `repo` and `kind`. The clock is calendar time only, since business-hours SLAs aren't supported. Each sync records the policy version it used.
+- **SLA policies (`sla.policies`):** configured 2026-10-27 by Hassan as the tracker's policy. Taha has not yet confirmed them as company policy.
+
+  | Policy | Applies to | Respond within | Resolve within |
+  |---|---|---|---|
+  | security | type Security | 24 h | 7 days |
+  | bug | type Bug | 24 h | 14 days |
+  | outage | type Outage | 24 h | 14 days |
+  | default | everything else | 3 days | 30 days |
+
+  - **Response** is the earliest of a comment by someone other than the author, or the first fix commit.
+  - **Resolved** (`resolvedWhen: "production-or-closed"`) is the earliest of the ticket being closed as completed, or the last fix change landing on production (`main`). A fix "lands" when the mainline merge that brought it in was made: a fix written 10-14 and released by a 10-21 merge counts from 10-21.
+  - **Matching:** the first matching policy wins; match keys are `type`, `priority`, `repo` and `kind`, and `{}` matches everything.
+  - **Clock:** calendar time only; business-hours SLAs aren't supported.
+  - **Changes:** each sync records the policy version it used, and a policy change shows up in every affected ticket's history.
 - **SLOs (`slos`):** `{ "service": "iam", "environment": "production", "availabilityTarget": 99.9, "windowDays": 30 }`. Availability is 1 − (5xx or error spans) ÷ server spans, measured in Axiom.
 - **Priority and project Status:** these live in the GitHub Project, which the current `gh` token can't read (it lacks `read:project`). Run `gh auth refresh -s read:project`, then set `"readProjectFields": true`. Until then, priority comes only from `P0`–`P3` in the title or labels.
 - **Fixed in, other repos:** add repos with an environment branch flow to `fixEnvironments.repos`. `ops` merges straight to `main` and is not mapped.

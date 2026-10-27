@@ -21,7 +21,14 @@
   "fullSyncEveryDays": 7,
   "sla": {
     "clock": "calendar",
-    "policies": []
+    "owner": "Tracker policy set by Hassanali-ilmiya on 2026-10-27; not yet confirmed by Taha as company policy.",
+    "resolvedWhen": "production-or-closed",
+    "policies": [
+      { "id": "security", "match": { "type": "Security" }, "responseHours": 24, "resolutionHours": 168 },
+      { "id": "bug", "match": { "type": "Bug" }, "responseHours": 24, "resolutionHours": 336 },
+      { "id": "outage", "match": { "type": "Outage" }, "responseHours": 24, "resolutionHours": 336 },
+      { "id": "default", "match": {}, "responseHours": 72, "resolutionHours": 720 }
+    ]
   },
   "slos": [],
   "telemetry": {

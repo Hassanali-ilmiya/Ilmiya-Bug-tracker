@@ -39,7 +39,7 @@ export async function gql(token, query, variables, fetchImpl = fetch) {
 // on that branch cancels it. Branch presence is what is verified, not a deployment.
 const historyQuery = `query($owner:String!,$name:String!,$ref:String!,$since:GitTimestamp,$after:String){ rateLimit{remaining resetAt}
   repository(owner:$owner,name:$name){ ref(qualifiedName:$ref){ target{ ... on Commit{
-    history(first:100, after:$after, since:$since){ pageInfo{hasNextPage endCursor} nodes{ oid message committedDate parents{totalCount} } } } } } } }`;
+    history(first:100, after:$after, since:$since){ pageInfo{hasNextPage endCursor} nodes{ oid message committedDate parents(first:2){ totalCount nodes{ oid } } } } } } } } }`;
 const commitQuery = `query($owner:String!,$name:String!,$oid:String!){ rateLimit{remaining resetAt}
   repository(owner:$owner,name:$name){ object(expression:$oid){ ... on Commit{ oid message committedDate parents{totalCount} } } } }`;
 
@@ -51,6 +51,26 @@ export function changeId(c) {
   const target = revert ? stripPr(revert[1]) : subject;
   const pr = target.match(/^merge pull request #(\d+)/);
   return { kind: revert ? 'revert' : c.parents.totalCount > 1 ? 'merge' : 'apply', id: pr ? `pr#${pr[1]}` : target };
+}
+
+// When each commit landed on a branch: the committer date of the mainline (first-parent) commit that brought
+// it in. A fix written on 10-14 and promoted to main by a 10-21 merge landed on main on 10-21, not 10-14.
+// (A fast-forward promotion has no merge commit, so its commits keep their own dates.)
+export function landedAt(commits) {
+  const byOid = new Map(commits.map(c => [c.oid, c]));
+  const mainline = [];
+  for (let c = commits[0]; c && !mainline.includes(c); c = byOid.get(c.parents.nodes[0]?.oid)) mainline.push(c);
+  const landed = new Map();
+  for (const m of mainline.reverse()) {
+    const stack = [m];
+    while (stack.length) {
+      const c = stack.pop();
+      if (!c || landed.has(c.oid)) continue;
+      landed.set(c.oid, m.committedDate);
+      for (const p of c.parents.nodes.slice(c === m ? 1 : 0)) stack.push(byOid.get(p.oid));
+    }
+  }
+  return landed;
 }
 
 async function branchHistory(q, repo, branch, since) {
@@ -83,7 +103,7 @@ async function updateFixEnvs(db, cfg, q, ctx) {
     if (kind === 'revert') return;
     if (!wanted.has(t.id)) wanted.set(t.id, new Map());
     const m = wanted.get(t.id), key = `${repo}|${id}`;
-    if (!m.has(key)) m.set(key, { repo, id, kind, sha: c.oid.slice(0, 8), subject: c.message.split('\n')[0].slice(0, 140), via });
+    if (!m.has(key)) m.set(key, { repo, id, kind, sha: c.oid.slice(0, 8), subject: c.message.split('\n')[0].slice(0, 140), via, committed_at: c.committedDate });
   };
   const pairs = fe.repos.flatMap(repo => fe.branches.map(([branch]) => [repo, branch]));
   const histories = await Promise.all(pairs.map(([repo, branch]) => branchHistory(q, repo, branch, since)));
@@ -91,12 +111,16 @@ async function updateFixEnvs(db, cfg, q, ctx) {
     presence[repo] ??= {};
     if (!histories[i]) { presence[repo][branch] = null; continue; }
     const idx = (presence[repo][branch] = new Map());
+    const landed = landedAt(histories[i]);
     for (const c of histories[i]) {
       shas.set(`${repo}@${c.oid}`, c);
       const { kind, id } = changeId(c);
       const e = idx.get(id) ?? {};
       const k = kind === 'revert' ? 'revert' : 'apply';
-      if (!e[k] || c.committedDate > e[k]) e[k] = c.committedDate;
+      if (!e[k] || c.committedDate > e[k]) {
+        e[k] = c.committedDate;
+        if (k === 'apply') e.landed = landed.get(c.oid) ?? c.committedDate;
+      }
       idx.set(id, e);
       for (const m of c.message.matchAll(REF)) {
         const t = byKey.get(`${m[1]}#${m[2]}`.toLowerCase());
@@ -121,14 +145,20 @@ async function updateFixEnvs(db, cfg, q, ctx) {
     const all = [...(wanted.get(t.id)?.values() ?? [])];
     // Merge commits only stand for the change when no plain commit references the issue.
     const required = all.some(e => e.kind === 'apply') ? all.filter(e => e.kind === 'apply') : all;
-    const evidence = required.map(e => ({ ...e, branches: Object.fromEntries(fe.branches.map(([b]) => [b, has(e.repo, b, e.id)])) }));
+    const evidence = required.map(e => ({
+      ...e,
+      branches: Object.fromEntries(fe.branches.map(([b]) => [b, has(e.repo, b, e.id)])),
+      landed: Object.fromEntries(fe.branches.map(([b]) => [b, has(e.repo, b, e.id) ? presence[e.repo][b].get(e.id).landed : null])),
+    }));
     const env = evidence.length ? fe.branches.find(([b]) => evidence.every(e => e.branches[b]))?.[1] ?? null : null;
+    // An environment is reached when its last fix change landed there.
+    const reached = Object.fromEntries(fe.branches.filter(([b]) => evidence.length && evidence.every(e => e.branches[b])).map(([b, name]) => [name, evidence.map(e => e.landed[b]).sort().at(-1)]));
     const prev = JSON.parse(t.fix_env || 'null');
     if (!ctx.baseline && (prev?.env ?? null) !== env) {
       await db.prepare('INSERT INTO changes (ticket_id, sync_id, at, field, old, new) VALUES (?,?,?,?,?,?)').bind(t.id, ctx.syncId, ctx.now, 'fixed_in', prev?.env ?? null, env).run();
       ctx.stats.changed++;
     }
-    await db.prepare('UPDATE tickets SET fix_env = ? WHERE id = ?').bind(JSON.stringify({ env, evidence, checked_at: ctx.now }), t.id).run();
+    await db.prepare('UPDATE tickets SET fix_env = ? WHERE id = ?').bind(JSON.stringify({ env, reached, evidence, checked_at: ctx.now }), t.id).run();
   }
 }
 

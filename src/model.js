@@ -111,16 +111,27 @@ export function enrich(cfg, r, now = Date.now()) {
   t.inactive_days = Math.floor((now - Date.parse(t.last_activity)) / DAY);
   t.stale = open && t.inactive_days >= cfg.staleDays;
 
+  // Response = earliest of a comment by someone else or a fix commit (never before the ticket existed).
+  const firstCommit = t.fix.evidence.map(e => e.committed_at).filter(Boolean).sort()[0];
+  const commitResponse = firstCommit && (firstCommit < t.created_at ? t.created_at : firstCommit);
+  t.response_at = [t.first_response_at, commitResponse].filter(Boolean).sort()[0] ?? null;
+  t.response_by = !t.response_at ? null : t.response_at === t.first_response_at ? 'comment' : 'fix commit';
+  // SLA resolution = closed as completed, or (when configured) the last fix change landing on production.
+  const top = cfg.fixEnvironments?.branches[0]?.[1];
+  const prodAt = t.fix.manual ? (t.fix.env === top ? o.updated_at : null) : t.fix.reached?.[top] ?? null;
+  const candidates = [t.resolved_at, cfg.sla.resolvedWhen === 'production-or-closed' ? prodAt : null].filter(Boolean).sort();
+  t.sla_resolved_at = candidates[0] ?? null;
+  t.sla_resolved_by = !t.sla_resolved_at ? null : t.sla_resolved_at === t.resolved_at ? 'closed' : t.fix.manual ? 'fix on production (manual)' : 'fix on production';
   const p = policyFor(cfg, t);
   if (!p) t.sla = { state: 'not_configured' };
   else {
-    const response = slaPart(due(t.created_at, p.responseHours), t.first_response_at, p.responseHours, now);
-    const resolution = open || t.resolved_at ? slaPart(due(t.created_at, p.resolutionHours), t.resolved_at, p.resolutionHours, now) : { state: 'n/a' };
+    const response = slaPart(due(t.created_at, p.responseHours), t.response_at, p.responseHours, now);
+    const resolution = open || t.sla_resolved_at ? slaPart(due(t.created_at, p.resolutionHours), t.sla_resolved_at, p.resolutionHours, now) : { state: 'n/a' };
     const parts = [response, resolution].filter(x => x && RANK[x.state]);
     t.sla = { policy: p.id, clock: cfg.sla.clock, response, resolution, state: parts.sort((a, b) => RANK[b.state] - RANK[a.state])[0]?.state ?? 'n/a' };
   }
   const milestoneLate = open && t.milestone_due && Date.parse(t.milestone_due) < now;
-  t.overdue = !!(milestoneLate || (open && t.sla.resolution?.state === 'breached'));
+  t.overdue = !!(milestoneLate || (open && !t.sla_resolved_at && t.sla.resolution?.state === 'breached'));
   t.overdue_reason = milestoneLate ? `milestone "${t.milestone}" was due ${t.milestone_due.slice(0, 10)}` : t.overdue ? 'resolution SLA breached' : null;
   return t;
 }
