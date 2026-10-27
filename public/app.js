@@ -23,7 +23,7 @@ const issues = () => data.tickets.filter(t => t.kind === 'issue');
 
 // ---------- badges ----------
 const SEV = { critical: ['critical', '▲ Critical'], high: ['high', '▲ High'], normal: ['', 'Normal'], unknown: ['', 'No priority'] };
-const sevBadge = t => `<span class="b ${SEV[t.severity][0]}" title="priority ${esc(t.priority ?? 'none')} from ${esc(t.priority_source ?? 'no source field')}">${esc(t.priority ?? SEV[t.severity][1])}</span>`;
+const sevBadge = t => `<span class="b ${SEV[t.severity][0]}" title="priority ${esc(t.priority ?? 'none')} from ${esc(t.priority_source === 'manual' ? `manual edit (source: ${t.source.priority ?? 'none'})` : t.priority_source ?? 'no source field')}">${esc(t.priority ?? SEV[t.severity][1])}${t.priority_source === 'manual' ? ' ✎' : ''}</span>`;
 const SLA_B = { breached: ['critical', '✕ SLA breached'], at_risk: ['warning', '! SLA at risk'], ok: ['good', '✓ Within SLA'], met: ['good', '✓ SLA met'], 'n/a': ['', 'SLA n/a'], not_configured: ['', 'Policy not configured'] };
 const slaBadge = t => `<span class="b ${SLA_B[t.sla.state][0]}">${SLA_B[t.sla.state][1]}</span>`;
 const flags = t => [
@@ -35,8 +35,9 @@ const flags = t => [
 ].filter(Boolean).join('');
 const FIX = { production: 'good', staging: 'warning', dev: 'serious' };
 const fixTitle = t => t.fix.evidence.map(e => `${e.repo.split('/')[1]}@${e.sha} ${e.subject}\n   on: ${Object.entries(e.branches).filter(([, v]) => v).map(([b]) => b).join(', ') || 'no environment branch'}`).join('\n');
-const fixBadge = t => (t.fix.env ? `<span class="b ${FIX[t.fix.env] ?? ''}" title="${esc(fixTitle(t))}">${esc(t.fix.env)}</span>` : `<span class="muted small" title="${esc(fixTitle(t))}">${esc(t.fixed_in === 'no fix evidence' ? '—' : t.fixed_in)}</span>`);
-const statusBadge = t => `${esc(t.status)} <span class="b ${t.status_source === 'project' ? 'src' : 'derived'}" title="${t.status_source === 'project' ? 'GitHub Project Status field' : 'derived from state, labels, assignees and linked PRs'}">${t.status_source}</span>`;
+const fixBadge = t => (t.fix.manual ? `<span class="b ${FIX[t.fix.env] ?? 'manual'}" title="manual edit; branch history says: ${esc(t.fix.computed_env ?? 'no environment')}">${esc(t.fix.env ?? 'none')} ✎</span>` : t.fix.env ? `<span class="b ${FIX[t.fix.env] ?? ''}" title="${esc(fixTitle(t))}">${esc(t.fix.env)}</span>` : `<span class="muted small" title="${esc(fixTitle(t))}">${esc(t.fixed_in === 'no fix evidence' ? '—' : t.fixed_in)}</span>`);
+const SOURCE_TITLE = { project: 'GitHub Project Status field', derived: 'derived from state, labels, assignees and linked PRs', manual: 'set manually in the tracker' };
+const statusBadge = t => `${esc(t.status)} <span class="b ${{ project: 'src', manual: 'manual' }[t.status_source] ?? 'derived'}" title="${SOURCE_TITLE[t.status_source]}">${t.status_source === 'manual' ? '✎ manual' : t.status_source}</span>`;
 
 // ---------- metrics (each is a filter preset, so every tile opens its ticket list) ----------
 const within = (s, ms) => s && Date.parse(s) >= ms;
@@ -57,6 +58,7 @@ const PRESETS = {
   fix_dev: { label: 'Open, fix only on dev', f: t => t.state === 'OPEN' && t.fix.env === 'dev' },
   fix_staging: { label: 'Open, fix on staging', f: t => t.state === 'OPEN' && t.fix.env === 'staging' },
   fix_prod: { label: 'Open, fix on production', f: t => t.state === 'OPEN' && t.fix.env === 'production' },
+  manual: { label: 'Edited manually', f: t => !!t.override },
 };
 
 // ---------- banner / sync ----------
@@ -241,7 +243,20 @@ function describeEvent(e) {
 }
 
 async function detail(view, id) {
-  const { ticket: t, snapshots, changes: ch } = await api(`/api/tickets/${encodeURIComponent(id)}`);
+  const { ticket: t, snapshots, changes: ch, choices } = await api(`/api/tickets/${encodeURIComponent(id)}`);
+  const o = t.override ?? {};
+  const pick = (k, label, values) => `<label>${label}<select data-o="${k}"><option value="">${esc(`(automatic)`)}</option>${values.map(v => `<option ${o[k] === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></label>`;
+  const controls = `<div class="card"><h2>Tracker controls <span class="b manual">✎ manual</span></h2>
+    <p class="muted small">Changes apply to this tracker only; GitHub is not modified. Sync never overwrites them. Every edit is recorded in the history below. Source/code says: state <b>${esc(t.source.state)}</b>, priority <b>${esc(t.source.priority ?? 'none')}</b>, fixed in <b>${esc(t.fix.manual ? t.fix.computed_env ?? 'no environment' : t.fix.env ?? 'no environment')}</b>.</p>
+    ${t.hidden ? '<p class="notice">This ticket is deleted from the tracker: it is not shown or counted anywhere until you restore it.</p>' : ''}
+    <div class="controls">
+      ${pick('status', 'Status', choices.status)}${pick('priority', 'Priority', choices.priority)}${pick('fix_env', 'Fixed in', choices.fix_env)}
+      <label>Note<textarea data-o="note" maxlength="2000">${esc(o.note ?? '')}</textarea></label>
+      <button id="ov-save">Save</button>
+      ${t.override && (o.status || o.priority || o.fix_env || o.note) ? '<button id="ov-reset">Reset to automatic</button>' : ''}
+      <button id="ov-hide" class="${t.hidden ? '' : 'danger'}">${t.hidden ? 'Restore to tracker' : 'Delete from tracker'}</button>
+      <span id="ov-msg" class="small muted" role="status"></span>
+    </div></div>`;
   const tl = t.timeline;
   const comments = tl.filter(e => e.t === 'comment'), lastEv = tl.at(-1);
   const summary = [
@@ -253,16 +268,26 @@ async function detail(view, id) {
   const sla = t.sla.state === 'not_configured' ? '<p class="notice">Policy not configured: no SLA target applies to this ticket, so it is never classified as breached.</p>'
     : `<dl class="kv"><dt>Policy</dt><dd>${esc(t.sla.policy)} (clock: ${esc(t.sla.clock)})</dd>${['response', 'resolution'].map(k => t.sla[k] ? `<dt>${k}</dt><dd>${slaBadge({ sla: t.sla[k] })} due ${fmtTime(t.sla[k].due)}${t.sla[k].breach_hours ? `, breached by ${hours(t.sla[k].breach_hours)}` : ''}${t.sla[k].remaining_hours != null ? `, ${hours(t.sla[k].remaining_hours)} left` : ''}</dd>` : '').join('')}</dl>`;
   const slaHistory = snapshots.map(s => ({ ...JSON.parse(s.data), at: s.captured_at, v: s.policy_version }));
+  const send = async (body, done) => {
+    try {
+      const res = await fetch(`/api/tickets/${encodeURIComponent(id)}/override`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const r = await res.json();
+      if (!res.ok) throw new Error(r.error || `HTTP ${res.status}`);
+      await load();
+      if (done) done(); else route();
+    } catch (err) { $('#ov-msg').textContent = `Not saved: ${err.message}`; }
+  };
   view.innerHTML = `<p><a href="#/tickets">← Ticket register</a></p>
     <h1>${esc(ref(t))}: ${esc(t.title)}</h1>
     <p>${statusBadge(t)} ${sevBadge(t)} ${slaBadge(t)} ${flags(t)} <a href="${esc(safeUrl(t.url))}" target="_blank" rel="noopener noreferrer">Open in GitHub ↗</a></p>
-    <p class="small muted">Badges: <span class="b src">source</span> = read from GitHub; <span class="b derived">derived</span> = computed by this dashboard from source fields; <span class="b approx">approx</span> = source history incomplete.</p>
+    <p class="small muted">Badges: <span class="b src">source</span> = read from GitHub; <span class="b derived">derived</span> = computed by this dashboard from source fields; <span class="b manual">✎ manual</span> = set by you in the tracker; <span class="b approx">approx</span> = source history incomplete.</p>
+    ${controls}
     <div class="grid2">
       <div class="card"><h2>Current state <span class="b src">source</span></h2><dl class="kv">
         <dt>State</dt><dd>${esc(t.state)}${t.state_reason ? ` (${esc(t.state_reason)})` : ''}</dd>
         <dt>Assignees</dt><dd>${esc(t.assignees.join(', ') || 'unassigned')}</dd>
         <dt>Author</dt><dd>${esc(t.author)}</dd>
-        <dt>Priority</dt><dd>${esc(t.priority ?? 'none')} ${t.priority_source ? `<span class="b src">from ${esc(t.priority_source)}</span>` : ''}</dd>
+        <dt>Priority</dt><dd>${esc(t.priority ?? 'none')} ${t.priority_source ? `<span class="b ${t.priority_source === 'manual' ? 'manual' : 'src'}">from ${esc(t.priority_source)}</span>` : ''}</dd>
         <dt>Type</dt><dd>${esc(t.type)}</dd>
         <dt>Labels</dt><dd>${t.labels.map(l => `<span class="b">${esc(l)}</span>`).join('') || '—'}</dd>
         <dt>Milestone</dt><dd>${esc(t.milestone ?? '—')}${t.milestone_due ? ` (due ${fmtDate(t.milestone_due)})` : ''}</dd>
@@ -287,6 +312,16 @@ async function detail(view, id) {
     <div class="card"><h2>Source timeline <span class="b src">source</span>${t.timeline_truncated ? ' <span class="b approx">first 100 events only</span>' : ''}</h2>
       <ul class="timeline"><li><span class="muted small">${fmtTime(t.created_at)}</span> ${esc(t.author)} opened the issue</li>${tl.map(e => `<li><span class="muted small">${fmtTime(e.at)}</span> ${describeEvent(e)}</li>`).join('')}</ul></div>
     <div class="card"><h2>Original description <span class="b src">source</span></h2><pre class="body">${esc(t.body || '(empty)')}</pre></div>`;
+  $('#ov-save').addEventListener('click', () => send(Object.fromEntries([...view.querySelectorAll('[data-o]')].map(el => [el.dataset.o, el.value]))));
+  $('#ov-reset')?.addEventListener('click', () => send({ status: null, priority: null, fix_env: null, note: null }));
+  const hide = $('#ov-hide');
+  hide.addEventListener('click', () => {
+    if (t.hidden) return send({ hidden: false });
+    if (hide.dataset.armed) return send({ hidden: true }, () => (location.hash = '#/deleted'));
+    hide.dataset.armed = '1';
+    hide.textContent = 'Click again to delete';
+    setTimeout(() => { delete hide.dataset.armed; hide.textContent = 'Delete from tracker'; }, 5000);
+  });
 }
 
 async function progress(view, params) {
@@ -308,7 +343,7 @@ async function progress(view, params) {
     <div class="card"><h2>Sync health for ${esc(day)}</h2>${daySyncs.length ? daySyncs.map(s => `<div>#${s.id} ${esc(s.trigger)} ${esc(s.mode)} at ${fmtTime(s.started_at)}: <span class="b ${s.status === 'success' ? 'good' : s.status === 'running' ? 'warning' : 'critical'}">${esc(s.status)}</span> ${s.errors && s.errors !== '[]' ? esc(s.errors) : ''}</div>`).join('') : '<p class="notice">No sync ran on this day: changes on this day may be missing (missing information, not "no change").</p>'}</div>
     ${section('Verified progress: completed', list.filter(t => inDay(t.resolved_at)), link, 'Nothing was completed on this day.')}
     ${section('New tickets', list.filter(t => inDay(t.created_at)), link, 'None created on this day.')}
-    ${section('Changes observed by syncs', dayCh.filter(c => c.field !== '_new'), c => `${byId[c.ticket_id] ? link(byId[c.ticket_id]) : esc(c.ticket_id)} — <b>${esc(c.field)}</b>: ${esc(c.old ?? '∅')} → ${esc(c.new ?? '∅')}`, 'No field changes observed (or no sync ran).')}
+    ${section('Changes observed by syncs and your manual edits (✎ manual:…)', dayCh.filter(c => c.field !== '_new'), c => `${byId[c.ticket_id] ? link(byId[c.ticket_id]) : esc(c.ticket_id)} — <b>${esc(c.field)}</b>: ${esc(c.old ?? '∅')} → ${esc(c.new ?? '∅')}`, 'No field changes observed (or no sync ran).')}
     ${section('Blocked (and why)', open.filter(t => t.blocked), t => `${link(t)} — ${esc([t.labels.filter(l => /block/i.test(l)).map(l => `label "${l}"`).join(', '), t.blocked_by.filter(b => b.state === 'OPEN').map(b => `blocked by ${b.ref}`).join(', '), t.project_status && /block/i.test(t.project_status) ? 'project status' : ''].filter(Boolean).join('; ') || 'blocked')}`, 'Nothing is blocked.')}
     ${section('High-severity issues still open', open.filter(t => ['critical', 'high'].includes(t.severity)), t => `${link(t)} ${sevBadge(t)}`, 'None (note: most tickets have no readable priority).')}
     ${section(`No progress (no source activity ≥ ${data.config.staleDays} days)`, open.filter(t => t.stale).sort(SORTS.inactivity), t => `${link(t)} — idle ${t.inactive_days} d`, 'Every open ticket had recent activity.')}
@@ -398,6 +433,20 @@ async function health(view, params) {
   }
 }
 
+async function deleted(view) {
+  const list = await api('/api/hidden');
+  view.innerHTML = `<h1>Deleted from tracker</h1>
+    <p class="muted small">These tickets are hidden from every page, metric and the daily summary. Sync keeps their data current but never brings them back; only Restore does (any edits you made are kept). GitHub is not modified.</p>
+    ${list.length ? `<div class="scroll"><table><tr><th>Ticket</th><th>Title</th><th>Source state</th><th>Deleted</th><th></th></tr>${list.map(t => `<tr><td class="nowrap"><a href="#/ticket/${encodeURIComponent(t.id)}">${esc(ref(t))}</a></td><td>${esc(t.title)}</td><td>${esc(t.state)}</td><td class="nowrap">${fmtTime(t.hidden_at)}</td><td><button data-restore="${esc(t.id)}">Restore</button></td></tr>`).join('')}</table></div>` : '<p class="muted">No deleted tickets.</p>'}`;
+  view.querySelectorAll('[data-restore]').forEach(b => b.addEventListener('click', async () => {
+    b.disabled = true;
+    const res = await fetch(`/api/tickets/${encodeURIComponent(b.dataset.restore)}/override`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ hidden: false }) });
+    if (!res.ok) { b.textContent = `Failed (HTTP ${res.status})`; return; }
+    await load();
+    route();
+  }));
+}
+
 async function syncs(view) {
   const list = await api('/api/syncs');
   view.innerHTML = `<h1>Synchronization</h1>
@@ -427,6 +476,7 @@ async function route() {
     else if (path === '/sla') sla(view, params);
     else if (path === '/health') await health(view, params);
     else if (path === '/syncs') await syncs(view);
+    else if (path === '/deleted') await deleted(view);
     else view.innerHTML = '<p>Not found.</p>';
   } catch (err) {
     view.innerHTML = `<p class="banner bad">Failed to load: ${esc(err.message)}</p>`;

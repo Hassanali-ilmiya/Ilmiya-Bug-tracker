@@ -2,9 +2,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { d1 } from '../local.mjs';
-import { enrich, LIST_COLUMNS, report, SHOWN } from '../src/model.js';
+import { enrich, LIST, report, VISIBLE } from '../src/model.js';
 import { gql, sync } from '../src/sync.js';
-import { authorized } from '../src/worker.js';
+import worker, { authorized } from '../src/worker.js';
 import fs from 'node:fs';
 import baseCfg from '../config.json' with { type: 'json' };
 
@@ -13,7 +13,7 @@ const cfg = { ...baseCfg, sources: [{ type: 'github', org: 'acme', author: 'me',
 
 function freshDb() {
   const db = d1(':memory:');
-  db.raw.exec(fs.readFileSync(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8'));
+  for (const f of fs.readdirSync(new URL('../migrations/', import.meta.url)).sort()) db.raw.exec(fs.readFileSync(new URL(`../migrations/${f}`, import.meta.url), 'utf8'));
   return db;
 }
 
@@ -42,7 +42,7 @@ function github(store, { failRepo } = {}) {
   return { fetchImpl, calls };
 }
 
-const rows = async db => (await db.prepare(`SELECT ${LIST_COLUMNS} FROM tickets ORDER BY number`).all()).results.map(r => enrich(cfg, r));
+const rows = async db => (await db.prepare(`${LIST} ORDER BY t.number`).all()).results.map(r => enrich(cfg, r));
 const run = (db, gh, opts = {}) => sync(db, cfg, { token: TOKEN, fetchImpl: gh.fetchImpl, ...opts });
 
 test('discovers every ticket across repos with pagination, ignores other authors, no duplicates on re-sync', async () => {
@@ -215,7 +215,7 @@ test('fixed-in: decided by code on each branch (cherry-picks, reverts, every cha
   const fix = async () => {
     const r = await sync(db, fcfg, { token: TOKEN, fetchImpl, full: true });
     assert.deepEqual(r.errors, []);
-    return (await db.prepare(`SELECT ${LIST_COLUMNS} FROM tickets WHERE ${SHOWN}`).all()).results.map(r => enrich(fcfg, r));
+    return (await db.prepare(`${LIST} WHERE ${VISIBLE}`).all()).results.map(r => enrich(fcfg, r));
   };
 
   let list = await fix();
@@ -238,4 +238,47 @@ test('fixed-in: decided by code on each branch (cherry-picks, reverts, every cha
   assert.deepEqual(history, ['dev->production', 'production->dev']);
   const text = await report(db, fcfg, { id: 99, status: 'success', mode: 'full', stats: { fetched: 0, new: 0, changed: 0 }, errors: [] });
   assert.match(text, /Open issues 1;/);
+});
+
+test('tracker controls: edits are validated, logged and win over source; deleted tickets stay deleted until restored', async () => {
+  const store = { a: [issue(1), issue(2, { title: 'second' })] };
+  const db = freshDb(), gh = github(store);
+  await run(db, gh);
+  const env = { DB: db, LOCAL_DEV: '1' };
+  const call = (method, path, body, headers = {}) =>
+    worker.fetch(new Request(`http://127.0.0.1${path}`, { method, headers: { 'content-type': 'application/json', ...headers }, body: body && JSON.stringify(body) }), env);
+  const put = (n, body, headers) => call('PUT', `/api/tickets/${encodeURIComponent(`github:I_${n}`)}/override`, body, headers);
+  const list = async () => (await (await call('GET', '/api/tickets')).json()).tickets;
+
+  assert.equal((await put(1, { status: 'shipped' })).status, 400);
+  assert.equal((await put(1, { priority: 'P9' })).status, 400);
+  assert.equal((await put(1, { fix_env: 'qa' })).status, 400);
+  assert.equal((await put(1, { bogus: 1 })).status, 400);
+  assert.equal((await put(9, { status: 'done' })).status, 404);
+  assert.equal((await put(1, { status: 'done' }, { origin: 'https://evil.example' })).status, 403);
+
+  assert.equal((await put(1, { status: 'done', priority: 'P0', fix_env: 'dev', note: 'verified on prod' })).status, 200);
+  let t = (await list()).find(x => x.number === 1);
+  assert.deepEqual([t.status, t.status_source, t.state, t.severity, t.priority_source, t.fix.env, t.source.state], ['done', 'manual', 'CLOSED', 'critical', 'manual', 'dev', 'OPEN']);
+  assert.ok(t.resolved_at);
+
+  await run(db, gh, { full: true });
+  assert.equal((await list()).find(x => x.number === 1).status, 'done', 'sync never overwrites a manual edit');
+
+  assert.equal((await put(2, { hidden: true })).status, 200);
+  store.a[1] = issue(2, { title: 'second, updated at source', updatedAt: new Date(Date.now() + 60e3).toISOString() });
+  await run(db, gh);
+  await run(db, gh, { full: true });
+  assert.deepEqual((await list()).map(x => x.number), [1], 'a deleted ticket is not re-added by syncs');
+  assert.match(await report(db, cfg, { skipped: 'test' }), /Open issues 0;/);
+  assert.equal((await (await call('GET', '/api/hidden')).json())[0].title, 'second, updated at source', 'its data is still kept current');
+  assert.equal((await put(2, { hidden: false })).status, 200);
+  assert.deepEqual((await list()).map(x => x.number).sort(), [1, 2]);
+
+  await put(1, { status: null, priority: null, fix_env: '', note: '' });
+  t = (await list()).find(x => x.number === 1);
+  assert.deepEqual([t.state, t.override, t.priority_source, t.fix.env], ['OPEN', null, null, null]);
+  const log = (await db.prepare("SELECT field, old, new FROM changes WHERE field LIKE 'manual:%' ORDER BY id").all()).results.map(c => `${c.field}:${c.old}->${c.new}`);
+  assert.deepEqual(log, ['manual:status:null->done', 'manual:priority:null->P0', 'manual:fix_env:null->dev', 'manual:note:null->verified on prod', 'manual:hidden:0->1', 'manual:hidden:1->0',
+    'manual:status:done->null', 'manual:priority:P0->null', 'manual:fix_env:dev->null', 'manual:note:verified on prod->null']);
 });

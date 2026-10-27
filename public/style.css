@@ -86,6 +86,11 @@ td.title { min-width: 260px; }
 .b.good { background: var(--good); color: #fff; border-color: transparent; }
 .b.src { color: var(--good-ink); }
 .b.derived { color: var(--ink-2); border-style: dashed; }
+.b.manual { color: var(--accent); border-color: var(--accent); }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; }
+.controls label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--ink-2); }
+.controls textarea { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 5px 9px; min-width: min(100%, 420px); min-height: 60px; }
+button.danger { border-color: var(--critical); color: var(--critical-ink); }
 .b.approx { color: var(--critical-ink); border-style: dashed; }
 
 pre.body { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-2); padding: 10px; border-radius: 6px; max-height: 420px; overflow: auto; font: 13px/1.45 ui-monospace, monospace; }

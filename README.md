@@ -21,6 +21,15 @@ Triggers: Claude Code hook (first prompt each day) · Cloudflare cron (02:00 UTC
 - **Fixed in:** decided from the code, never from what a comment says. On every sync, the app reads the commit history of each environment branch (`main` = production, `staging`, `development` = dev) in `config.json → fixEnvironments.repos`. A fix change is a commit whose message references the issue (e.g. `(safina#1357)`), or a commit linked from a comment that says fixed/merged/deployed; description links are ignored. A change counts as present on a branch if a commit with the same subject is there, so cherry-picks with new SHAs count, and a later `Revert "…"` on that branch cancels it. The column shows the highest environment that contains **every** fix change for the issue. That proves the code is on the branch, not that a deploy finished. A fix nobody referenced (no issue number in the commit, no comment link) shows as *no fix evidence*, never as a wrong environment.
 - **Derived values:** status, severity, SLA and "fixed in" are computed from source fields and labelled **derived**; source values are labelled **source**. Values from a truncated timeline (more than 100 events) are labelled **approx**.
 
+## Tracker controls (manual edits)
+
+On any ticket's page, **Tracker controls** lets you set **status** (open / in progress / in review / blocked / done), **priority** (P0–P3), **fixed in** (production / staging / dev / none) and a **note**, or **delete the ticket from the tracker**.
+
+- **Tracker only:** edits change the tracker, never GitHub (the app's token is read-only). They are stored in the `overrides` table, which sync never writes, so they survive every sync.
+- **Marked and logged:** edited values are marked **✎ manual**, and the page still shows what GitHub or the code says. Every edit is logged in the ticket's history and the activity feed (`manual:<field>`).
+- **Deleting** hides a ticket from every page, metric and the daily summary. Sync keeps its data current but never brings it back. **Deleted** in the nav lists deleted tickets with a **Restore** button.
+- **Reset to automatic** clears your edits and goes back to source and branch-history values.
+
 ## Run locally
 
 Requirements: Node 24+ and `gh auth login`. The token is read at runtime with `gh auth token`. It is never written to disk.

@@ -3,9 +3,12 @@
 const HOUR = 3600e3, DAY = 864e5;
 const parse = (s, d) => (s ? JSON.parse(s) : d);
 
-// Tickets closed as "not planned" (cancelled) are kept for history but never shown or counted.
-export const SHOWN = "state_reason IS NOT 'NOT_PLANNED'";
-export const LIST_COLUMNS = 'id,source,repo,number,kind,title,url,state,state_reason,author,assignees,labels,milestone,milestone_due,issue_type,priority,priority_source,project_status,created_at,updated_at,closed_at,merged_at,is_draft,comments_count,timeline_truncated,blocked_by,facts,fix_env,missing_since,synced_at';
+const COLUMNS = 'id,source,repo,number,kind,title,url,state,state_reason,author,assignees,labels,milestone,milestone_due,issue_type,priority,priority_source,project_status,created_at,updated_at,closed_at,merged_at,is_draft,comments_count,timeline_truncated,blocked_by,facts,fix_env,missing_since,synced_at';
+// Every ticket list goes through this: source row + the manual override set from the dashboard.
+export const LIST = `SELECT ${COLUMNS.split(',').map(c => `t.${c}`)}, o.status AS o_status, o.status_at AS o_status_at, o.priority AS o_priority, o.fix_env AS o_fix_env, o.note AS o_note, o.updated_at AS o_updated_at FROM tickets t LEFT JOIN overrides o ON o.ticket_id = t.id`;
+// Never shown or counted: tickets closed as "not planned" (cancelled) and tickets deleted from the tracker.
+export const VISIBLE = "t.state_reason IS NOT 'NOT_PLANNED' AND COALESCE(o.hidden, 0) = 0";
+export const STATUS_CHOICES = ['open', 'in progress', 'in review', 'blocked', 'done'];
 
 export function priorityOf(cfg, title, labels, projectFields) {
   if (projectFields.Priority) return [projectFields.Priority, 'project'];
@@ -74,15 +77,24 @@ const RANK = { breached: 4, at_risk: 3, ok: 2, met: 1 };
 export function enrich(cfg, r, now = Date.now()) {
   const t = { ...r, assignees: parse(r.assignees, []), labels: parse(r.labels, []), blocked_by: parse(r.blocked_by, []), is_draft: !!r.is_draft, timeline_truncated: !!r.timeline_truncated };
   const f = parse(r.facts, {});
-  delete t.facts; delete t.tracked;
+  for (const k of ['facts', 'tracked', 'fix_env', 'o_status', 'o_status_at', 'o_priority', 'o_fix_env', 'o_note', 'o_updated_at']) delete t[k];
+  // Manual overrides win over source/derived values; the source value is kept alongside for comparison.
+  const o = r.o_updated_at ? { status: r.o_status, status_at: r.o_status_at, priority: r.o_priority, fix_env: r.o_fix_env, note: r.o_note, updated_at: r.o_updated_at } : null;
+  t.override = o;
+  t.source = { state: r.state, priority: r.priority };
+  if (o?.priority) Object.assign(t, { priority: o.priority, priority_source: 'manual' });
+  if (o?.status) {
+    const done = o.status === 'done';
+    Object.assign(t, { state: done ? 'CLOSED' : 'OPEN', state_reason: done ? 'COMPLETED' : null, closed_at: done ? (r.state === 'CLOSED' ? r.closed_at : o.status_at) : null });
+  }
   t.fix = parse(r.fix_env, { env: null, evidence: [] });
-  delete t.fix_env;
-  t.fixed_in = t.fix.env ?? (t.fix.evidence.length ? 'not on every env branch' : 'no fix evidence');
+  if (o?.fix_env) t.fix = { ...t.fix, computed_env: t.fix.env, env: o.fix_env === 'none' ? null : o.fix_env, manual: true };
+  t.fixed_in = t.fix.env ?? (t.fix.manual ? 'none (manual)' : t.fix.evidence.length ? 'not on every env branch' : 'no fix evidence');
   Object.assign(t, { reopened: f.reopened, linked_prs: f.linked_prs || [], first_response_at: f.first_response_at, work_started_at: f.work_started_at, last_activity: f.last_activity || r.updated_at, history_approx: f.approx });
   const open = t.state === 'OPEN';
   t.type = typeOf(cfg, t);
   t.severity = cfg.priority.critical.includes(t.priority) ? 'critical' : cfg.priority.high.includes(t.priority) ? 'high' : t.priority ? 'normal' : 'unknown';
-  t.blocked = open && (t.labels.some(l => cfg.blockedLabels.includes(l)) || t.blocked_by.some(b => b.state === 'OPEN') || /block/i.test(t.project_status || ''));
+  t.blocked = open && (o?.status ? o.status === 'blocked' : t.labels.some(l => cfg.blockedLabels.includes(l)) || t.blocked_by.some(b => b.state === 'OPEN') || /block/i.test(t.project_status || ''));
   const openPrs = t.linked_prs.filter(p => p.state === 'OPEN').length;
   if (!open) t.status = t.merged_at ? 'merged' : t.state_reason === 'NOT_PLANNED' ? 'cancelled' : t.state_reason === 'DUPLICATE' ? 'duplicate' : 'done';
   else if (t.project_status) t.status = t.project_status;
@@ -92,6 +104,7 @@ export function enrich(cfg, r, now = Date.now()) {
   else if (t.assignees.length) t.status = 'assigned';
   else t.status = 'open';
   t.status_source = open && t.project_status ? 'project' : 'derived';
+  if (o?.status) Object.assign(t, { status: o.status, status_source: 'manual' });
   t.in_progress = open && /progress|review/i.test(t.status);
   t.resolved_at = !open && ['done', 'merged'].includes(t.status) ? t.closed_at : null;
   t.days_open = Math.floor(((open ? now : Date.parse(t.closed_at)) - Date.parse(t.created_at)) / DAY);
@@ -135,7 +148,7 @@ export async function report(db, cfg, r, now = Date.now()) {
     : `Daily ticket sync #${r.id} (${r.mode}) finished with status ${r.status.toUpperCase()}: ${r.stats.fetched} fetched, ${r.stats.new} new, ${r.stats.changed} changed.`;
   const lines = [head, `Last fully successful sync: ${lastOk?.started_at ?? 'never'}.`];
   if (r.errors?.length) lines.push(`WARNING incomplete data. Errors: ${r.errors.slice(0, 5).map(e => `${e.scope}: ${e.error}`).join(' | ')}`);
-  const all = (await db.prepare(`SELECT ${LIST_COLUMNS} FROM tickets WHERE kind='issue' AND ${SHOWN}`).all()).results.map(x => enrich(cfg, x, now));
+  const all = (await db.prepare(`${LIST} WHERE t.kind = 'issue' AND ${VISIBLE}`).all()).results.map(x => enrich(cfg, x, now));
   const open = all.filter(t => t.state === 'OPEN');
   const ref = t => `${t.repo.split('/')[1]}#${t.number}`;
   const line = t => `- ${ref(t)} [${t.priority ?? '-'}|${t.status}|${t.assignees.join(',') || 'unassigned'}|fix on: ${t.fix.env ?? 'none'}] ${t.title.slice(0, 110)}`;
@@ -145,7 +158,7 @@ export async function report(db, cfg, r, now = Date.now()) {
   lines.push(policies ? `SLA: breached ${n(t => t.sla.state === 'breached')}, at risk ${n(t => t.sla.state === 'at_risk')}.` : 'SLA: policy not configured (no targets agreed yet) — no ticket is classified as breached.');
   if (cfg.fixEnvironments) lines.push(`Open issues by where the fix code is (branch presence, not deploy-verified): ${cfg.fixEnvironments.branches.map(([b, env]) => `${env} ${n(t => t.fix.env === env)}`).join(', ')}, no fix evidence ${n(t => !t.fix.env)}.`);
   if (r.id) {
-    const ch = (await db.prepare(`SELECT c.field, c.old, c.new, t.repo, t.number, t.title FROM changes c JOIN tickets t ON t.id = c.ticket_id WHERE c.sync_id = ? AND t.${SHOWN} ORDER BY c.id LIMIT 25`).bind(r.id).all()).results;
+    const ch = (await db.prepare(`SELECT c.field, c.old, c.new, t.repo, t.number, t.title FROM changes c JOIN tickets t ON t.id = c.ticket_id LEFT JOIN overrides o ON o.ticket_id = t.id WHERE c.sync_id = ? AND ${VISIBLE} ORDER BY c.id LIMIT 25`).bind(r.id).all()).results;
     if (ch.length) lines.push('Changes observed by this sync:', ...ch.map(c => `- ${ref(c)} ${c.field}: ${c.old ?? '∅'} → ${c.new ?? '∅'} (${c.title.slice(0, 80)})`));
   }
   const top = (label, list) => list.length && lines.push(`${label} (${list.length}):`, ...list.slice(0, 8).map(line));

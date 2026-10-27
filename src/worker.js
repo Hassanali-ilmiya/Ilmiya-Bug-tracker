@@ -1,5 +1,5 @@
 import cfg from '../config.json' with { type: 'json' };
-import { enrich, LIST_COLUMNS, report, SHOWN, statusDurations } from './model.js';
+import { enrich, LIST, report, STATUS_CHOICES, statusDurations, VISIBLE } from './model.js';
 import { sync } from './sync.js';
 
 const SECURITY_HEADERS = {
@@ -87,10 +87,43 @@ async function health(env, url) {
   }
 }
 
+// Manual tracker edits. Only the tracker changes; GitHub is never written to. Every edit is logged in
+// `changes` (sync_id 0, field "manual:<name>") so the ticket history shows who-changed-what-when.
+async function setOverride(db, id, body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return [{ error: 'JSON object body required' }, 400];
+  if (!(await db.prepare('SELECT 1 FROM tickets WHERE id = ?').bind(id).first())) return [{ error: 'ticket not found' }, 404];
+  const allowed = { status: STATUS_CHOICES, priority: cfg.priority.order, fix_env: ['none', ...(cfg.fixEnvironments?.branches.map(b => b[1]) ?? [])] };
+  const cur = (await db.prepare('SELECT * FROM overrides WHERE ticket_id = ?').bind(id).first()) ?? { status: null, status_at: null, priority: null, fix_env: null, note: null, hidden: 0 };
+  const next = { ...cur };
+  for (const [k, v] of Object.entries(body)) {
+    if (k === 'hidden') {
+      if (typeof v !== 'boolean') return [{ error: 'hidden must be true or false' }, 400];
+      next.hidden = v ? 1 : 0;
+    } else if (k === 'note') {
+      if (v !== null && (typeof v !== 'string' || v.length > 2000)) return [{ error: 'note must be text of at most 2000 characters' }, 400];
+      next.note = v?.trim() || null;
+    } else if (k in allowed) {
+      if (v !== null && v !== '' && !allowed[k].includes(v)) return [{ error: `${k} must be one of: ${allowed[k].join(', ')} (or empty to clear)` }, 400];
+      next[k] = v || null;
+    } else return [{ error: `unknown field: ${k}` }, 400];
+  }
+  const now = new Date().toISOString();
+  if (next.status !== cur.status) next.status_at = next.status ? now : null;
+  const log = ['status', 'priority', 'fix_env', 'note', 'hidden'].filter(k => (cur[k] ?? null) !== (next[k] ?? null)).map(k =>
+    db.prepare('INSERT INTO changes (ticket_id, sync_id, at, field, old, new) VALUES (?, 0, ?, ?, ?, ?)').bind(id, now, `manual:${k}`, cur[k] == null ? null : String(cur[k]), next[k] == null ? null : String(next[k])));
+  if (!log.length) return [{ ok: true, unchanged: true }, 200];
+  const empty = !next.status && !next.priority && !next.fix_env && !next.note && !next.hidden;
+  await db.batch([...log, empty
+    ? db.prepare('DELETE FROM overrides WHERE ticket_id = ?').bind(id)
+    : db.prepare('INSERT INTO overrides (ticket_id, status, status_at, priority, fix_env, note, hidden, updated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(ticket_id) DO UPDATE SET status=excluded.status, status_at=excluded.status_at, priority=excluded.priority, fix_env=excluded.fix_env, note=excluded.note, hidden=excluded.hidden, updated_at=excluded.updated_at')
+      .bind(id, next.status, next.status_at, next.priority, next.fix_env, next.note, next.hidden, now)]);
+  return [{ ok: true }, 200];
+}
+
 async function api(req, env, url) {
   const db = env.DB, path = url.pathname;
   if (req.method === 'GET' && path === '/api/tickets') {
-    const rows = (await db.prepare(`SELECT ${LIST_COLUMNS} FROM tickets WHERE ${SHOWN}`).all()).results;
+    const rows = (await db.prepare(`${LIST} WHERE ${VISIBLE}`).all()).results;
     const now = Date.now();
     return json({
       now: new Date(now).toISOString(), ...(await meta(db)),
@@ -98,22 +131,32 @@ async function api(req, env, url) {
       tickets: rows.map(r => enrich(cfg, r, now)),
     });
   }
+  const ov = path.match(/^\/api\/tickets\/(.+)\/override$/);
+  if (req.method === 'PUT' && ov) {
+    const [body, status] = await setOverride(db, decodeURIComponent(ov[1]), await req.json().catch(() => null));
+    return json(body, status);
+  }
+  if (req.method === 'GET' && path === '/api/hidden') {
+    return json((await db.prepare('SELECT t.id, t.repo, t.number, t.title, t.url, t.state, o.updated_at AS hidden_at FROM overrides o JOIN tickets t ON t.id = o.ticket_id WHERE o.hidden = 1 ORDER BY o.updated_at DESC').all()).results);
+  }
   const one = path.match(/^\/api\/tickets\/(.+)$/);
   if (req.method === 'GET' && one) {
     const id = decodeURIComponent(one[1]);
-    const row = await db.prepare('SELECT * FROM tickets WHERE id = ?').bind(id).first();
+    const row = await db.prepare(`${LIST.replace(' FROM tickets t', ', t.body, t.timeline, o.hidden AS o_hidden FROM tickets t')} WHERE t.id = ?`).bind(id).first();
     if (!row) return json({ error: 'not found' }, 404);
     const timeline = JSON.parse(row.timeline || '[]');
     const t = enrich(cfg, row);
+    delete t.timeline; delete t.o_hidden;
     return json({
-      ticket: { ...t, body: row.body, timeline, durations: statusDurations(cfg, t, timeline) },
+      ticket: { ...t, body: row.body, timeline, hidden: !!row.o_hidden, durations: statusDurations(cfg, t, timeline) },
+      choices: { status: STATUS_CHOICES, priority: cfg.priority.order, fix_env: ['none', ...(cfg.fixEnvironments?.branches.map(b => b[1]) ?? [])] },
       snapshots: (await db.prepare('SELECT s.sync_id, s.captured_at, s.data, y.policy_version FROM snapshots s LEFT JOIN syncs y ON y.id = s.sync_id WHERE s.ticket_id = ? ORDER BY s.sync_id').bind(id).all()).results,
       changes: (await db.prepare('SELECT * FROM changes WHERE ticket_id = ? ORDER BY id').bind(id).all()).results,
     });
   }
   if (req.method === 'GET' && path === '/api/changes') {
     const from = url.searchParams.get('from') || new Date(Date.now() - 30 * 864e5).toISOString();
-    return json((await db.prepare(`SELECT c.*, t.repo, t.number, t.title, t.url, t.kind FROM changes c JOIN tickets t ON t.id = c.ticket_id WHERE c.at >= ? AND t.${SHOWN} ORDER BY c.id DESC LIMIT 5000`).bind(from).all()).results);
+    return json((await db.prepare(`SELECT c.*, t.repo, t.number, t.title, t.url, t.kind FROM changes c JOIN tickets t ON t.id = c.ticket_id LEFT JOIN overrides o ON o.ticket_id = t.id WHERE c.at >= ? AND ${VISIBLE} ORDER BY c.id DESC LIMIT 5000`).bind(from).all()).results);
   }
   if (req.method === 'GET' && path === '/api/syncs') return json((await db.prepare('SELECT * FROM syncs ORDER BY id DESC LIMIT 60').all()).results);
   if (req.method === 'GET' && path === '/api/health') return json(await health(env, url));
