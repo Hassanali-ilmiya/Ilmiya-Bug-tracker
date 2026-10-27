@@ -320,6 +320,8 @@ export async function sync(db, cfg, { token, trigger = 'manual', full = false, f
         if (!page.pageInfo.hasNextPage) break;
         after = page.pageInfo.endCursor;
       }
+      // GitHub answers an org query with an empty list (not an error) when the token can't see the org's repos.
+      if (!repos.length) throw new Error(`Token can see no repositories in GitHub org "${src.org}" — a fine-grained token must have "${src.org}" as resource owner and be approved by the org`);
       ctx.stats.repos += repos.length;
       for (const repo of repos) for (const kind of src.kinds) {
         if (kind !== 'issue' || repo.hasIssuesEnabled) scopes.push({ org: src.org, repo: repo.name, kind, author: src.author ?? null, scope: `github:${src.org}/${repo.name}:${kind}${src.author ? `:by:${src.author}` : ""}` });

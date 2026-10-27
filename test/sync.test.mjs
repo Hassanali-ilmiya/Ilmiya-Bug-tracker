@@ -315,3 +315,10 @@ test('SLA: resolved when the fix lands on production (or closed), response via c
   const bug = enrich(scfg, row({ env: null, evidence: [] }, { title: '[Bug] other', created_at: '2026-10-26T00:00:00Z' }), now);
   assert.deepEqual([bug.sla.policy, bug.sla.resolution.state, bug.response_at], ['default', 'ok', null], 'catch-all policy for other types');
 });
+
+test('a token that sees no repositories in the org is a failed sync, never an empty "success"', async () => {
+  const db = freshDb();
+  const r = await run(db, github({}));
+  assert.equal(r.status, 'failed');
+  assert.match(r.errors[0].error, /can see no repositories/);
+});
