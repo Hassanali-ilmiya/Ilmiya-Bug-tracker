@@ -13,8 +13,8 @@
   // 02:00 UTC daily = 07:00 PKT.
   "triggers": { "crons": ["0 2 * * *"] },
   "vars": {
-    "ACCESS_TEAM_DOMAIN": "https://REPLACE_TEAM.cloudflareaccess.com",
-    "ACCESS_AUD": "REPLACE_WITH_ACCESS_APPLICATION_AUD"
+    "ACCESS_TEAM_DOMAIN": "https://quiet-butterfly-653c.cloudflareaccess.com",
+    "ACCESS_AUD": "c75d89c87d8dbe324d6c43f9400e936849f70d063c5604ecddf5b5d69465ece5"
   },
   "observability": { "enabled": true }
 }
